@@ -1,86 +1,180 @@
-# Wazuh SIEM + Shuffle SOAR Detection & Response Pipeline
+# Wazuh SIEM + Shuffle SOAR — Detection & Response Pipeline
 
-> **Cybersecurity Homelab · Project 1** | Built by Venkata Nukala
+A homelab cybersecurity project that builds a full detection-to-response pipeline: SSH brute-force attack from Kali Linux → Wazuh SIEM alert → Shuffle SOAR automation → email notification with VirusTotal IP enrichment.
 
-![Wazuh](https://img.shields.io/badge/Wazuh-4.9.0-blue) ![Shuffle](https://img.shields.io/badge/Shuffle-SOAR-blue) ![Status](https://img.shields.io/badge/Pipeline-Working-green)
-
-## Overview
-
-Built a detection and automated response pipeline from scratch using Wazuh SIEM and Shuffle SOAR on a local VMware homelab. Simulated real attacker behaviour from a Kali Linux VM — network reconnaissance with Nmap (T1046) and SSH brute-force with Hydra (T1110) — and tuned the pipeline to detect, alert, and send automated email notifications for confirmed threats.
+---
 
 ## Architecture
 
 ```
-[Kali Linux 192.168.68.131]
-        |
-        |  Nmap scan (T1046) + Hydra SSH brute force (T1110)
-        v
-[Ubuntu Server 192.168.68.130]  <-- Target
-        |
-        |  /var/log/auth.log (Docker volume mount)
-        v
-[Wazuh SIEM - Docker]
-        |
-        |  Alert Level >= 10 · Rule 5758 fires
-        v
-[Shuffle SOAR - Webhook]
-        |
-        |  Automated email dispatch
-        v
-[Email Alert - Incident Notification]
+Kali Linux (Attacker)
+    │  SSH brute force (Hydra)
+    ▼
+Ubuntu Server 22.04 (Target)
+    │  /var/log/auth.log (bind-mounted read-only into Wazuh container)
+    ▼
+Wazuh Manager 4.9.0 (Docker)
+    │  Rule 5758 fires → level 8 alert → webhook trigger
+    ▼
+Shuffle SOAR
+    │  Webhook → Change Me → VirusTotal IP lookup → Email
+    ▼
+Email Alert received
 ```
+
+---
 
 ## Lab Environment
 
-| VM | OS | IP | Role | Resources |
-|---|---|---|---|---|
-| Ubuntu Server | Ubuntu 22.04 LTS | 192.168.68.130 | Wazuh Manager + Shuffle SOAR | 4 vCPU · 8 GB RAM |
-| Kali Linux | Kali 2024.x | 192.168.68.131 | Attacker VM | 4 vCPU · 4 GB RAM |
-| Windows 10 | Windows 10 | 192.168.68.1 | Wazuh Agent (host) | Host machine |
+| Machine | Role | OS |
+|---|---|---|
+| Ubuntu 22.04 Server | Wazuh Manager + Shuffle SOAR (Docker) | Ubuntu 22.04 LTS |
+| Kali Linux 2024.x | Attacker VM | Kali Rolling |
+| Windows 10 | Wazuh Agent (endpoint monitoring) | Windows 10 |
 
-## Attack Simulations
+All VMs run on VMware Workstation Pro on the host machine.
 
-### T1046 — Network Service Scanning (Nmap)
-```bash
-# Aggressive full-port SYN scan
-nmap -sS -A 192.168.68.130
+---
+
+## Attack Simulation Results
+
+### Nmap SYN Scan (T1046 — Network Service Discovery)
+- Logged by Wazuh but stayed **below level 10 threshold** → no email triggered
+- Confirms passive detection is working without alert fatigue
+
+### Hydra SSH Brute Force (T1110 — Brute Force)
+- **Rule 5758** fired: *"Maximum authentication attempts exceeded"*
+- Alert level: **8** | MITRE: **T1110 — Credential Access / Brute Force**
+- Shuffle webhook triggered → VirusTotal queried attacker IP → **email received within ~2 minutes**
+
+---
+
+## Screenshots
+
+### Wazuh Alert — Rule 5758 Fired
+![Wazuh Alert Detail](wazuh%20alert.png)
+
+Rule 5758 fired at level 8. Attacker IP `192.168.68.131` mapped to MITRE T1110 Brute Force / Credential Access automatically by Wazuh's built-in rule set.
+
+---
+
+### Wazuh Agents Dashboard — Both VMs Active
+![Wazuh Agents Dashboard](Wazuh%20agents.png)
+
+Ubuntu target (`MrRobot`) and Kali attacker both visible and reporting to the Wazuh manager.
+
+---
+
+### Shuffle SOAR — Workflow Build
+![Shuffle Workflow](final%20shuffle%20workflow.png)
+
+Webhook → Change Me (alert parser) → VirusTotal v3 (IP enrichment) → Email. Full pipeline visible in Build view.
+
+---
+
+### Shuffle Debug — Execution Overview
+![Shuffle Debug Overview](debug1.png)
+
+Execution status: **FINISHED**. Source: webhook. Started 16:19:56, finished 16:20:14. Full Wazuh JSON payload visible flowing through the pipeline.
+
+---
+
+### Shuffle Debug — Wazuh Alert Payload
+![Shuffle Debug Payload](debug2.png)
+
+The Change Me node showing the parsed Wazuh alert: severity, title, rule ID 2502, timestamp, and all_fields (10 items). This is the raw JSON Wazuh sent to Shuffle.
+
+---
+
+### Shuffle Debug — VirusTotal + Email Result
+![Shuffle Debug Results](debug3.png)
+
+**VirusTotal v3:** `status: 200`, IP `192.168.68.131` queried, `success: true`.  
+**Email 1:** `success: true`, `reason: "Email sent to nukalavenkatanarsimahabharghav@gmail.com"`.  
+End-to-end confirmation that every node in the pipeline ran successfully.
+
+---
+
+## Sample Alert (from Wazuh Dashboard)
+
+```json
+{
+  "rule": {
+    "id": "5758",
+    "description": "Maximum authentication attempts exceeded",
+    "level": 8,
+    "mitre": {
+      "technique": ["Brute Force"],
+      "tactic": ["Credential Access"],
+      "id": ["T1110"]
+    }
+  },
+  "agent": { "name": "MrRobot" },
+  "data": {
+    "srcip": "192.168.68.131",
+    "dstuser": "mrrobot"
+  }
+}
 ```
-**Result:** All ports filtered by firewall — scan logged, below level 10 threshold, no email triggered.
 
-### T1110 — Brute Force (Hydra)
-```bash
-# SSH brute force with 4 threads
-hydra -l mrrobot -P /usr/share/wordlists/rockyou.txt ssh://192.168.68.130 -t 4 -V
+---
+
+## Reproduce This Lab
+
+The full Shuffle workflow is exported as `Wazuh Enrichment.json` in this repo.
+
+**To import it into your own Shuffle instance:**
+1. Open Shuffle → go to **Workflows**
+2. Click **Import workflow**
+3. Upload `Wazuh Enrichment.json`
+4. Update the Email node with your own SMTP credentials
+5. Update the VirusTotal node with your own API key
+6. Copy the new webhook URL and paste it into your `wazuh_manager.conf` `<hook_url>` field
+7. Restart your Wazuh manager container
+
+You'll have the full Webhook → VirusTotal → Email pipeline running in under 5 minutes.
+
+---
+
+## Key Learnings — What Actually Broke
+
+**1. Docker isolation hides the host filesystem**  
+Wazuh runs in a Docker container. Even though `wazuh_manager.conf` pointed to `/var/log/auth.log`, the container couldn't see it. Fix: added a read-only bind mount in `docker-compose.yml`:
+```yaml
+- /var/log/auth.log:/var/log/auth.log:ro
 ```
-**Result:** Rule 5758 fired → Shuffle webhook triggered → email received within 2 minutes.
 
-## Sample Alert
+**2. XML parser crashes on split closing tags**  
+When saving `wazuh_manager.conf` in nano, the `</integration>` closing tag got split across two lines. Wazuh's XML parser threw error 1101 (mismatched tag) and the manager wouldn't start. Fix: found the split line in nano and put it back on one line.
 
-| Field | Value |
-|---|---|
-| Rule ID | 5758 |
-| Description | Maximum authentication attempts exceeded |
-| Level | 8 |
-| Attacker IP | 192.168.68.131 |
-| Target User | mrrobot |
-| Log Source | /var/log/auth.log |
-| MITRE ID | T1110 |
-| Tactic | Credential Access |
-| Technique | Brute Force |
+**3. Alert threshold flooding the inbox**  
+The default Shuffle trigger level was 3 — which means every syslog event fires an email. Ran one Hydra scan and got 200+ emails. Fix: raised the `<level>` in the `<integration>` block to 10.
 
-## Key Learnings
+**4. Agent/manager version mismatch**  
+Wazuh agent 4.14.9 wouldn't connect to manager 4.9.0 — they refused to handshake across major versions. Fix: downgraded the agent to match the manager.
 
-1. **Docker container isolation** — Wazuh manager can't see the host filesystem by default. Had to add a read-only volume mount in docker-compose.yml to expose auth.log inside the container.
-2. **Version pinning matters** — apt installed Wazuh agent 4.14.9 but the manager runs 4.9.0. They refused to communicate until the agent was manually downgraded.
-3. **Alert noise is a real problem** — Default threshold (level 3) sent 200+ emails in minutes. Tuned to level 10. Alert fatigue is a genuine SOC challenge.
-4. **MITRE ATT&CK mapping is automatic** — Wazuh's built-in rules map to MITRE techniques automatically. T1110 Brute Force fired on a real Hydra attack.
+---
 
 ## What I'd Do Differently
 
-1. **Install dedicated Wazuh agents on each VM from the start** instead of relying on volume mounts — cleaner architecture and works at scale.
-2. **Set alert level thresholds before running attacks.** Running Hydra with the default level-3 threshold flooded the inbox and required retroactive tuning.
-3. **Document while building** — several troubleshooting steps would have been cleaner with running notes.
+- Install dedicated Wazuh agents on each VM instead of using Docker volume mounts — cleaner architecture and works out of the box
+- Set alert thresholds **before** running the first attack, not after inbox flood
+- Run `docker compose logs -f` while configuring to catch XML errors immediately
+- Keep a running doc during the build — most of the interesting stuff happens in the failures, not the successes
+
+---
 
 ## Tech Stack
 
-`Wazuh 4.9.0` `Shuffle SOAR` `OpenSearch` `Docker Compose` `Kali Linux` `Ubuntu 22.04` `Nmap` `Hydra` `VMware Workstation Pro` `MITRE ATT&CK`
+| Tool | Version | Purpose |
+|---|---|---|
+| Wazuh | 4.9.0 | SIEM — log ingestion, detection, alerting |
+| Shuffle SOAR | Latest | Automation — webhook, enrichment, email |
+| OpenSearch | Bundled | Log storage and dashboard |
+| Docker Compose | Latest | Container orchestration |
+| Kali Linux | 2024.x | Attacker VM — Nmap, Hydra |
+| Ubuntu Server | 22.04 LTS | Target VM |
+| Nmap | Latest | Network recon (T1046) |
+| Hydra | Latest | SSH brute force (T1110) |
+| VMware Workstation Pro | Latest | Hypervisor |
+| MITRE ATT&CK | — | Threat framework reference |
