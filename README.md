@@ -2,11 +2,11 @@
 
 > **Cybersecurity Homelab · Project 1** | Built by Venkata Nukala
 
-![Wazuh](https://img.shields.io/badge/Wazuh-4.9.0-blue) ![Shuffle](https://img.shields.io/badge/Shuffle-SOAR-blue) ![Status](https://img.shields.io/badge/Pipeline-Working-green)
+![Wazuh](https://img.shields.io/badge/Wazuh-4.9.0-blue) ![Shuffle](https://img.shields.io/badge/Shuffle-SOAR-blue) ![Status](https://img.shields.io/badge/Pipeline-Working-green) ![Auto-Block](https://img.shields.io/badge/Auto--Block-Active-red)
 
 ## Overview
 
-Built a detection and automated response pipeline from scratch using Wazuh SIEM and Shuffle SOAR on a local VMware homelab. Simulated real attacker behaviour from a Kali Linux VM — network reconnaissance with Nmap (T1046) and SSH brute-force with Hydra (T1110) — and tuned the pipeline to detect, alert, and send automated email notifications with VirusTotal IP enrichment for confirmed threats.
+Built a detection and **automated response** pipeline from scratch using Wazuh SIEM and Shuffle SOAR on a local VMware homelab. Simulated real attacker behaviour from a Kali Linux VM — network reconnaissance with Nmap (T1046) and SSH brute-force with Hydra (T1110) — and built a fully automated pipeline that detects, enriches, notifies, and **automatically blocks** the attacker at the firewall — no human action required.
 
 ## Architecture
 
@@ -25,9 +25,15 @@ Built a detection and automated response pipeline from scratch using Wazuh SIEM 
         v
 [Shuffle SOAR - Webhook]
         |
-        |  Automated email dispatch
+        |-- VirusTotal v3 (IP enrichment)
+        |-- Email Alert (Incident Notification)
+        |-- SSH Auto-Block (ufw insert 1 deny from <attacker_ip>)
         v
-[Email Alert - Incident Notification]
+[Ubuntu Firewall - UFW]
+        |
+        |  Attacker IP blocked at position 1 — all traffic dropped
+        v
+[Hydra: ERROR — Timeout connecting to 192.168.68.130]
 ```
 
 ## Lab Environment
@@ -77,7 +83,7 @@ Ubuntu target (`MrRobot`) and Kali attacker both visible and reporting to the Wa
 ### Shuffle SOAR — Full Pipeline
 ![Shuffle Workflow](final%20shuffle%20workflow.png)
 
-Webhook → Change Me (alert parser) → VirusTotal v3 (IP enrichment) → Email. Full pipeline visible in Build view, running status confirmed.
+Webhook → Change Me (alert parser) → VirusTotal v3 (IP enrichment) → Email → SSH Auto-Block. Full pipeline visible in Build view, running status confirmed.
 
 ---
 
@@ -100,6 +106,7 @@ The Change Me node showing the parsed Wazuh alert: severity, title, rule ID, tim
 
 **VirusTotal v3:** `status: 200`, IP `192.168.68.131` queried, `success: true`.  
 **Email 1:** `success: true`, `reason: "Email sent to nukalavenkatanarsimahabharghav@gmail.com"`.  
+**SSH Auto-Block:** `success: true` — UFW deny rule inserted at position 1 on Ubuntu Server.  
 End-to-end confirmation that every node in the pipeline ran successfully.
 
 ---
@@ -147,7 +154,14 @@ The full Shuffle workflow is exported as `Wazuh Enrichment.json` in this repo.
 5. Copy the new webhook URL and paste it into your `wazuh_manager.conf` `<hook_url>` field
 6. Restart the Wazuh manager container
 
-You'll have the full Webhook → VirusTotal → Email pipeline running in under 5 minutes.
+You'll have the full Webhook → VirusTotal → Email → SSH Auto-Block pipeline running in under 5 minutes.
+
+**Note for SSH auto-block node:** The SSH node uses key-based authentication. You'll need to:
+1. Generate an SSH key pair on your target host: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/shuffle_key -N ""`
+2. Add the public key to `~/.ssh/authorized_keys`
+3. Upload the private key file to Shuffle → Admin → Files
+4. Reference the file ID in the SSH node's "Private key file id" field
+5. Add a sudoers rule so the SSH user can run UFW without a password: `username ALL=(ALL) NOPASSWD: /usr/sbin/ufw`
 
 ---
 
@@ -177,6 +191,15 @@ The default Shuffle trigger level was 3 — meaning every syslog event fires an 
 **4. Agent/manager version mismatch**  
 `apt` installed Wazuh agent 4.14.9 but the manager runs 4.9.0 — they refused to handshake across major versions. Fix: manually downgraded the agent to match the manager version exactly.
 
+**5. SSH authentication in Shuffle**  
+The pre-filled private key file ID in the Shuffle SSH node didn't correspond to a valid key. Fix: generated a new RSA 4096-bit key pair on Ubuntu, added the public key to `~/.ssh/authorized_keys`, uploaded the private key to Shuffle Files, and referenced the new file ID.
+
+**6. Attacker IP variable path in Shuffle**  
+The Wazuh webhook payload wraps all alert fields under `all_fields` in Shuffle's format. The attacker IP is at `$change_me.all_fields.data.srcip` — not `$change_me.data.srcip` directly. Expanded the Runtime Argument view in Shuffle's debug pane to trace the exact JSON path.
+
+**7. UFW rule ordering matters**  
+UFW evaluates rules top-to-bottom. A `ufw deny from <IP>` adds the rule at the bottom — below the existing `allow 22` rule — making it ineffective for SSH traffic. Fix: use `ufw insert 1 deny from <IP>` to place the deny rule at position 1, above all allow rules.
+
 ---
 
 ## What I'd Do Differently
@@ -185,6 +208,7 @@ The default Shuffle trigger level was 3 — meaning every syslog event fires an 
 - Set alert level thresholds **before** running the first attack, not after the inbox floods
 - Run `docker compose logs -f` while configuring to catch XML parse errors immediately instead of after a failed restart
 - Keep a running doc during the build — the interesting stuff happens in the failures, not the successes
+- Set up SSH key-based auth for Shuffle from the start — the extra setup is worth it for automated response nodes
 
 ---
 

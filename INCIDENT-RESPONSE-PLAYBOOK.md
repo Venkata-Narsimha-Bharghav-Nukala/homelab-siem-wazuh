@@ -36,7 +36,7 @@
 |---|---|---|
 | Log collection | Wazuh Agent | `/var/log/auth.log` bind-mounted read-only into Wazuh Docker container |
 | SIEM alerting | Wazuh 4.9.0 | Rule 5758 enabled; alert level threshold set to 10 for email dispatch |
-| Automated response | Shuffle SOAR | Webhook trigger on Wazuh alert → VirusTotal enrichment → email notification |
+| Automated response | Shuffle SOAR | Webhook trigger on Wazuh alert → VirusTotal enrichment → email notification → SSH auto-block (UFW) |
 | IP reputation | VirusTotal v3 | API integrated into Shuffle workflow for attacker IP lookup |
 | Notification | Gmail SMTP | Automated email to SOC inbox on confirmed alert |
 
@@ -110,6 +110,10 @@ Shuffle received the Wazuh webhook at **16:19:56** and completed enrichment by *
 **Node 4 — Email:** Notification dispatched to SOC inbox  
 `success: true — Email sent to nukalavenkatanarsimahabharghav@gmail.com`
 
+**Node 5 — SSH Auto-Block (Shuffle Tools 1):** SSH command executed on Ubuntu Server  
+`success: true — sudo ufw insert 1 deny from 192.168.68.131`  
+UFW deny rule inserted at **position 1** (above all allow rules) — attacker IP fully blocked at firewall level
+
 ### 2.4 Threat Assessment
 
 | Factor | Assessment |
@@ -129,13 +133,16 @@ Shuffle received the Wazuh webhook at **16:19:56** and completed enrichment by *
 
 | Action | Method | Status |
 |---|---|---|
-| Block attacker IP at firewall | `ufw deny from 192.168.68.131` | ✅ Recommended |
-| Kill active SSH sessions from attacker | `ss -tp | grep 192.168.68.131` → `kill <pid>` | ✅ Recommended |
-| Temporarily disable SSH password auth | Set `PasswordAuthentication no` in `/etc/ssh/sshd_config` | ✅ Recommended |
+| Block attacker IP at firewall | `ufw insert 1 deny from 192.168.68.131` | ✅ **Automated via Shuffle SOAR** |
+| Kill active SSH sessions from attacker | `ss -tp \| grep 192.168.68.131` → `kill <pid>` | ✅ Recommended (manual) |
+| Temporarily disable SSH password auth | Set `PasswordAuthentication no` in `/etc/ssh/sshd_config` | ✅ Recommended (manual) |
 
 ```bash
-# Block attacker IP
-sudo ufw deny from 192.168.68.131 to any
+# Block attacker IP — AUTOMATED by Shuffle SOAR SSH node
+# Shuffle executes: sudo ufw insert 1 deny from <attacker_ip>
+# Rule lands at position 1 — above all allow rules
+sudo ufw status numbered
+# Expected: [ 1] Anywhere  DENY IN  <attacker_ip>
 
 # Verify no active sessions
 ss -tp | grep 192.168.68.131
@@ -194,8 +201,10 @@ If a breach had occurred:
 | 16:19:56 | Wazuh Rule 5758 fires — alert level 8 |
 | 16:19:56 | Shuffle webhook triggered |
 | 16:20:10 | VirusTotal query returns — 0 malicious |
-| 16:20:14 | Email alert delivered to SOC inbox |
-| 16:20:14 | Incident detected, analysed, and notified — **total automated response: 18 seconds** |
+| 16:20:10 | Email alert delivered to SOC inbox |
+| 16:20:14 | SSH auto-block executed — `ufw insert 1 deny from 192.168.68.131` |
+| 16:20:14 | UFW deny rule confirmed at position 1 — attacker fully blocked |
+| 16:20:14 | Incident detected, enriched, notified, and contained — **total automated response: 18 seconds** |
 
 ### 4.2 Lessons Learned
 
@@ -209,17 +218,17 @@ If a breach had occurred:
 
 | Gap | Impact | Fix |
 |---|---|---|
-| No automated blocking — alert only | Attacker could continue indefinitely | Add a Shuffle node to run `ufw deny` via SSH on trigger |
 | Alert threshold tuned too low initially (level 3) | 200+ emails from one scan | Always set threshold before running attacks |
 | No dedicated Wazuh agent on Kali attacker VM | Attacker-side visibility missing | Install agents on all VMs from the start |
 | Email body is unformatted plain text | Hard to parse quickly | Improve Shuffle email template with structured HTML |
+| UFW allow rule for SSH uses broad "Anywhere" scope | Legitimate SSH also blocked if IP rotate | Restrict `ufw allow` to trusted management IPs only |
 
 ### 4.3 Metrics
 
 | Metric | Value |
 |---|---|
 | Mean Time to Detect (MTTD) | < 1 second (automated rule) |
-| Mean Time to Respond (MTTR) | 18 seconds (automated enrichment + notification) |
+| Mean Time to Respond (MTTR) | 18 seconds (automated enrichment + notification + firewall block) |
 | False Positive Rate | 0% — attack was real and correctly classified |
 | Alerts generated | 1 (after threshold tuning to level 10) |
 
