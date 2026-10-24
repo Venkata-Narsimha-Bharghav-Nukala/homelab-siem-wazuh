@@ -2,11 +2,11 @@
 
 > **Cybersecurity Homelab · Project 1** | Built by Venkata Nukala
 
-![Wazuh](https://img.shields.io/badge/Wazuh-4.9.0-blue) ![Shuffle](https://img.shields.io/badge/Shuffle-SOAR-blue) ![Status](https://img.shields.io/badge/Pipeline-Working-green) ![Auto-Block](https://img.shields.io/badge/Auto--Block-Active-red)
+![Wazuh](https://img.shields.io/badge/Wazuh-4.9.0-blue) ![Shuffle](https://img.shields.io/badge/Shuffle-SOAR-blue) ![Status](https://img.shields.io/badge/Pipeline-Working-green) ![Auto-Block](https://img.shields.io/badge/Auto--Block-Active-red) ![AbuseIPDB](https://img.shields.io/badge/AbuseIPDB-Integrated-orange) ![Gemini](https://img.shields.io/badge/Gemini_AI-Triage-purple)
 
 ## Overview
 
-Built a detection and **automated response** pipeline from scratch using Wazuh SIEM and Shuffle SOAR on a local VMware homelab. Simulated real attacker behaviour from a Kali Linux VM — network reconnaissance with Nmap (T1046) and SSH brute-force with Hydra (T1110) — and built a fully automated pipeline that detects, enriches, notifies, and **automatically blocks** the attacker at the firewall — no human action required.
+Built a detection and **automated response** pipeline from scratch using Wazuh SIEM and Shuffle SOAR on a local VMware homelab. Simulated real attacker behaviour from a Kali Linux VM — network reconnaissance with Nmap (T1046) and SSH brute-force with Hydra (T1110) — and built a fully automated 7-node pipeline that detects, enriches with threat intel from two sources, generates AI-powered L1 triage via Google Gemini, notifies via email, and **automatically blocks** the attacker at the firewall — no human action required.
 
 ## Architecture
 
@@ -25,15 +25,19 @@ Built a detection and **automated response** pipeline from scratch using Wazuh S
         v
 [Shuffle SOAR - Webhook]
         |
-        |-- VirusTotal v3 (IP enrichment)
-        |-- Email Alert (Incident Notification)
-        |-- SSH Auto-Block (ufw insert 1 deny from <attacker_ip>)
+        |-- [1] Wazuh Alert        (Trigger — receives raw JSON from Wazuh)
+        |-- [2] Alert Parser       (Extracts all_fields from webhook payload)
+        |-- [3] VirusTotal         (IP reputation — malicious vendor count)
+        |-- [4] AbuseIPDB Check    (Crowdsourced abuse confidence score 0–100%)
+        |-- [5] AI Triage          (Google Gemini — L1 SOC analyst triage report)
+        |-- [6] SOC Notification   (Email — full enriched alert to analyst inbox)
+        |-- [7] SSH Auto-Block     (ufw deny from <attacker_ip> on target host)
         v
 [Ubuntu Firewall - UFW]
         |
-        |  Attacker IP blocked at position 1 — all traffic dropped
+        |  Attacker IP blocked — all traffic dropped
         v
-[Hydra: ERROR — Timeout connecting to 192.168.68.130]
+[Hydra: ERROR — all children disabled due to too many connection errors]
 ```
 
 ## Lab Environment
@@ -58,9 +62,9 @@ nmap -sS -A 192.168.68.130
 ### T1110 — Brute Force (Hydra)
 ```bash
 # SSH brute force with 4 threads
-hydra -l mrrobot -P /usr/share/wordlists/rockyou.txt ssh://192.168.68.130 -t 4 -V
+hydra -I -l testuser -P /usr/share/wordlists/rockyou.txt 192.168.68.130 ssh -t 4
 ```
-**Result:** Rule 5758 fired → Shuffle webhook triggered → VirusTotal queried attacker IP → email received within 2 minutes.
+**Result:** Rule 5758 fired → Shuffle webhook triggered → full 7-node pipeline executed → VirusTotal + AbuseIPDB enriched attacker IP → Gemini generated L1 triage report → email delivered to analyst inbox → UFW blocked attacker IP → Hydra received "too many connection errors" and terminated.
 
 ---
 
@@ -150,11 +154,13 @@ The full Shuffle workflow is exported as `Wazuh Enrichment.json` in this repo.
 1. Open Shuffle → **Workflows** → **Import workflow**
 2. Upload `Wazuh Enrichment.json`
 3. Update the Email node with your SMTP credentials
-4. Update the VirusTotal node with your API key
-5. Copy the new webhook URL and paste it into your `wazuh_manager.conf` `<hook_url>` field
-6. Restart the Wazuh manager container
+4. Update the VirusTotal node with your VirusTotal v3 API key
+5. Update the AbuseIPDB Check node — add your AbuseIPDB v2 API key in the node's **Setup** tab
+6. Update the AI Triage node URL with your Google AI Studio API key: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=YOUR_KEY`
+7. Copy the new webhook URL and paste it into your `wazuh_manager.conf` `<hook_url>` field
+8. Restart the Wazuh manager container
 
-You'll have the full Webhook → VirusTotal → Email → SSH Auto-Block pipeline running in under 5 minutes.
+You'll have the full 7-node pipeline running in under 10 minutes.
 
 **Note for SSH auto-block node:** The SSH node uses key-based authentication. You'll need to:
 1. Generate an SSH key pair on your target host: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/shuffle_key -N ""`
@@ -195,9 +201,27 @@ The default Shuffle trigger level was 3 — meaning every syslog event fires an 
 The pre-filled private key file ID in the Shuffle SSH node didn't correspond to a valid key. Fix: generated a new RSA 4096-bit key pair on Ubuntu, added the public key to `~/.ssh/authorized_keys`, uploaded the private key to Shuffle Files, and referenced the new file ID.
 
 **6. Attacker IP variable path in Shuffle**  
-The Wazuh webhook payload wraps all alert fields under `all_fields` in Shuffle's format. The attacker IP is at `$change_me.all_fields.data.srcip` — not `$change_me.data.srcip` directly. Expanded the Runtime Argument view in Shuffle's debug pane to trace the exact JSON path.
+The Wazuh webhook payload wraps all alert fields under `all_fields` in Shuffle's format. The attacker IP is at `$alert_parser.all_fields.data.srcip` — not `$alert_parser.data.srcip` directly. Expanded the Runtime Argument view in Shuffle's debug pane to trace the exact JSON path.
 
-**7. UFW rule ordering matters**  
+**7. Shuffle variable naming is lowercase with underscores**  
+Shuffle derives variable names from node display names: spaces become underscores and the whole name is lowercased. Node "Alert Parser" → `$alert_parser`. Node "AI Triage" → `$ai_triage`. Third-party advice suggesting `$Alert_Parser` or `$exec.Alert_Parser` is wrong and will silently fail.
+
+**8. Gemini native Shuffle app double-concatenates the URL**  
+The native Gemini app in Shuffle appends its own `/v1beta/models/...` path to whatever URL is set in authentication — causing a doubled path and 404. Fix: replace the native Gemini app with the generic HTTP node and set the full Gemini API URL directly in the node config.
+
+**9. Gemini model deprecation for new API keys**  
+`gemini-1.5-flash` and the unversioned `gemini-2.5-flash` alias are unavailable to new Google AI Studio API keys. Fix: use `gemini-3.5-flash` (routes internally to `gemini-3.6-flash`). Query `https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY` to see available models for your account.
+
+**10. Gemini thinking model response structure — `parts.0` vs `parts.1`**  
+Gemini's thinking-enabled models return two entries in `parts[]`: `parts[0]` contains the internal reasoning blob (including a base64-encoded `thoughtSignature` field), and `parts[1].text` contains the clean response text. Using `$ai_triage.body.candidates.0.content.parts.0.text` in the email body dumps the entire reasoning JSON — including the base64 blob — into the notification. Fix: use `parts.1.text` to get only the human-readable triage analysis.
+
+**11. AbuseIPDB isolated test behavior with empty variables**  
+When testing the AbuseIPDB node in isolation (Test Action), Shuffle variables like `$alert_parser.all_fields.data.srcip` resolve to empty — no live pipeline data exists yet. AbuseIPDB's API hangs indefinitely on a blank IP request (no error, just timeout). Fix: temporarily hardcode a real IP like `8.8.8.8` for API connectivity verification, then restore the variable path before wiring into the full pipeline.
+
+**12. UFW block persistence across Hydra re-tests**  
+A successful pipeline run inserts a `DENY` rule for the attacker IP into UFW. That rule persists across reboots and sessions. On the next Hydra re-test run, Hydra times out immediately because UFW still has the rule from the previous run — even though Shuffle never re-ran. Fix: run `sudo ufw delete deny from <attacker_IP> to any` on the target host before each new test cycle. Check current rules first with `sudo ufw status numbered`.
+
+**13. UFW rule ordering matters**  
 UFW evaluates rules top-to-bottom. A `ufw deny from <IP>` adds the rule at the bottom — below the existing `allow 22` rule — making it ineffective for SSH traffic. Fix: use `ufw insert 1 deny from <IP>` to place the deny rule at position 1, above all allow rules.
 
 ---
@@ -217,12 +241,16 @@ UFW evaluates rules top-to-bottom. A `ufw deny from <IP>` adds the rule at the b
 | Tool | Version | Purpose |
 |---|---|---|
 | Wazuh | 4.9.0 | SIEM — log ingestion, detection, alerting |
-| Shuffle SOAR | Latest | Automation — webhook, enrichment, email |
+| Shuffle SOAR | Latest | Automation — webhook, enrichment, response |
+| VirusTotal API | v3 | IP reputation — malicious vendor detections |
+| AbuseIPDB API | v2 | Crowdsourced abuse confidence score |
+| Google Gemini | gemini-3.5-flash (→3.6) | AI-powered L1 SOC triage analysis |
 | OpenSearch | Bundled | Log storage and dashboard |
 | Docker Compose | Latest | Container orchestration |
 | Kali Linux | 2024.x | Attacker VM — Nmap, Hydra |
 | Ubuntu Server | 22.04 LTS | Target VM |
 | Nmap | Latest | Network recon (T1046) |
 | Hydra | Latest | SSH brute force (T1110) |
+| UFW | Built-in | Automated firewall blocking |
 | VMware Workstation Pro | Latest | Hypervisor |
 | MITRE ATT&CK | — | Threat framework reference |
