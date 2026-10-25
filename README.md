@@ -176,8 +176,8 @@ The full Shuffle workflow is exported as `Wazuh Enrichment.json` in this repo.
 3. Update the Email node with your SMTP credentials
 4. Update the VirusTotal node with your VirusTotal v3 API key
 5. Update the AbuseIPDB Check node — add your AbuseIPDB v2 API key in the node's **Setup** tab
-6. Update the AI Triage node URL with your Google AI Studio API key: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=YOUR_KEY`
-7. Copy the new webhook URL and paste it into your `wazuh_manager.conf` `<hook_url>` field
+6. Update the AI Triage node URL with your Google AI Studio API key: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=YOUR_KEY`
+7. Copy the new webhook URL and paste it into the `<hook_url>` field of the **host** file `wazuh-docker/single-node/config/wazuh_cluster/wazuh_manager.conf`, and set `<rule_id>5712</rule_id>` in the same `<integration>` block (don't edit `/var/ossec/etc/ossec.conf` inside the container; it gets overwritten on restart)
 8. Restart the Wazuh manager container
 
 You'll have the full 7-node pipeline running in under 10 minutes.
@@ -213,6 +213,7 @@ The default Shuffle trigger level was 3 — meaning every syslog event fires an 
   <alert_format>json</alert_format>
 </integration>
 ```
+Level 10 was later replaced with `<rule_id>5712</rule_id>`. See Engineering Challenges below for why.
 
 **4. Agent/manager version mismatch**  
 `apt` installed Wazuh agent 4.14.9 but the manager runs 4.9.0 — they refused to handshake across major versions. Fix: manually downgraded the agent to match the manager version exactly.
@@ -230,10 +231,10 @@ Shuffle derives variable names from node display names: spaces become underscore
 The native Gemini app in Shuffle appends its own `/v1beta/models/...` path to whatever URL is set in authentication — causing a doubled path and 404. Fix: replace the native Gemini app with the generic HTTP node and set the full Gemini API URL directly in the node config.
 
 **9. Gemini model deprecation for new API keys**  
-`gemini-1.5-flash` and the unversioned `gemini-2.5-flash` alias are unavailable to new Google AI Studio API keys. Fix: use `gemini-3.5-flash` (routes internally to `gemini-3.6-flash`). Query `https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY` to see available models for your account.
+`gemini-1.5-flash` and the unversioned `gemini-2.5-flash` alias are unavailable to new Google AI Studio API keys. Fix: use `gemini-3.6-flash` (`gemini-3.5-flash` also routes to it). Query `https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY` to see available models for your account.
 
-**10. Gemini thinking model response structure — `parts.0` vs `parts.1`**  
-Gemini's thinking-enabled models return two entries in `parts[]`: `parts[0]` contains the internal reasoning blob (including a base64-encoded `thoughtSignature` field), and `parts[1].text` contains the clean response text. Using `$ai_triage.body.candidates.0.content.parts.0.text` in the email body dumps the entire reasoning JSON — including the base64 blob — into the notification. Fix: use `parts.1.text` to get only the human-readable triage analysis.
+**10. Extracting the triage text from Gemini's response**  
+The triage text lives at `candidates[0].content.parts[0].text`, next to a base64 `thoughtSignature` field. My first guess, `parts.1.text`, pointed at a part that doesn't exist, and Shuffle dumped the whole `candidates` array into the email. Re-testing showed the real issue is Shuffle's path syntax: `.0` is not an array index (see Engineering Challenges below). Fix: `$ai_triage.body.candidates.#.content.parts.#.text`.
 
 **11. AbuseIPDB isolated test behavior with empty variables**  
 When testing the AbuseIPDB node in isolation (Test Action), Shuffle variables like `$alert_parser.all_fields.data.srcip` resolve to empty — no live pipeline data exists yet. AbuseIPDB's API hangs indefinitely on a blank IP request (no error, just timeout). Fix: temporarily hardcode a real IP like `8.8.8.8` for API connectivity verification, then restore the variable path before wiring into the full pipeline.
@@ -246,6 +247,24 @@ UFW evaluates rules top-to-bottom. A `ufw deny from <IP>` adds the rule at the b
 
 ---
 
+## Engineering Challenges & Root-Cause Troubleshooting
+
+Problems from re-testing and hardening the finished pipeline, including after a full VM reboot.
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Some alert emails had a blank attacker IP, and one Hydra attack started 5+ pipeline runs | `<level>10</level>` let two rules through. Rule 5712 (sshd brute force) carries `data.srcip`. Rule 2502 (PAM "user missed the password more than one time") is also level 10 but has no source IP | Changed the integration filter to `<rule_id>5712</rule_id>`. One run per attack, and the IP is always present |
+| The rule-5712 fix was gone after a VM reboot | I had edited `/var/ossec/etc/ossec.conf` inside the container. On every start, the container copies the host file `config/wazuh_cluster/wazuh_manager.conf` (bind-mounted to `/wazuh-config-mount/etc/ossec.conf`) over it | Found the mount with `docker inspect`, made the change in the host file, restarted the container. The fix now survives reboots |
+| Gemini returned `429 RESOURCE_EXHAUSTED` | Free tier allows 20 requests per day per model for `gemini-3.6-flash`. Five runs per attack used it up fast | One run per attack after the rule fix. Quotas are counted per model |
+| `gemini-2.0-flash` returned 404; `gemini-3.8-flash` hit `ReadTimeout`, then `503 UNAVAILABLE` | 2.0 is retired. 3.8 is a slow thinking model and was overloaded; raising the HTTP timeout to 60s did not help | Pinned `gemini-3.6-flash`. Checked the `url` field in the run output to confirm which model actually ran |
+| After the reboot no workflow ran and Runtime Location showed "Stopped" | Orborus logs: `dial tcp 192.168.68.130:5001: i/o timeout`. The backend was listening on `0.0.0.0:5001` and answered from the host, but traffic from the Orborus container to the host IP was dropped. UFW allowed only port 22 | `sudo ufw allow 5001/tcp` and `sudo ufw allow 3001/tcp`, then restarted Orborus |
+| Orborus connected but sat idle: "Orborus UUID mismatch… another Orborus (Leader) is already handling this Runtime Location queue" | The backend still held the pre-restart Orborus as leader | `docker restart shuffle-backend`. Orborus took over and started executing |
+| ~10 alert emails arrived at once with no new attack | Alerts had queued in the backend while Orborus was down, and all ran on recovery | Expected behaviour. Each queued run is also one Gemini call, so it costs quota |
+| AI triage section showed a JSON blob with `thoughtSignature` | In Shuffle, `.0` is not an array index. It is read as a key named `"0"`, the lookup fails, and Shuffle prints the parent array | `$ai_triage.body.candidates.#.content.parts.#.text`. `.#` is Shuffle's list operator. Trade-off: the text arrives wrapped in `["..."]` with literal `\n` |
+| `grep "192.168.68.131" alerts.json` returned a "Successful sudo to ROOT executed" alert | Wazuh had logged my own `sudo grep` command, which contained the IP | Searched the decoded field instead: `grep '"srcip":"192.168.68.131"'` |
+
+---
+
 ## What I'd Do Differently
 
 - Install dedicated Wazuh agents on each VM instead of using Docker volume mounts — cleaner architecture and works out of the box at scale
@@ -253,6 +272,8 @@ UFW evaluates rules top-to-bottom. A `ufw deny from <IP>` adds the rule at the b
 - Run `docker compose logs -f` while configuring to catch XML parse errors immediately instead of after a failed restart
 - Keep a running doc during the build — the interesting stuff happens in the failures, not the successes
 - Set up SSH key-based auth for Shuffle from the start — the extra setup is worth it for automated response nodes
+- Filter the webhook on specific rule IDs from day one instead of a severity level
+- Parse the Gemini response with a Python transform node instead of Shuffle path syntax, so the email gets clean line breaks (planned for v2)
 
 ---
 
