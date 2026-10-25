@@ -64,16 +64,16 @@ nmap -sS -A 192.168.68.130
 # SSH brute force with 4 threads
 hydra -I -l testuser -P /usr/share/wordlists/rockyou.txt 192.168.68.130 ssh -t 4
 ```
-**Result:** Rule 5758 fired → Shuffle webhook triggered → full 7-node pipeline executed → VirusTotal + AbuseIPDB enriched attacker IP → Gemini generated L1 triage report → email delivered to analyst inbox → UFW blocked attacker IP → Hydra received "too many connection errors" and terminated.
+**Result:** Rule 5712 fired → Shuffle webhook triggered → full 7-node pipeline executed → VirusTotal + AbuseIPDB enriched attacker IP → Gemini generated L1 triage report → email delivered to analyst inbox → UFW blocked attacker IP → Hydra received "too many connection errors" and terminated.
 
 ---
 
 ## Screenshots
 
-### Wazuh Alert — Rule 5758 Fired
+### Wazuh Alert — Rule 5712 Fired
 ![Wazuh Alert Detail](wazuh%20alert.png)
 
-Rule 5758 fired at level 8. Attacker IP `192.168.68.131` mapped to MITRE T1110 Brute Force / Credential Access automatically by Wazuh's built-in rule set.
+Rule 5712 ("sshd: brute force trying to get access to the system") fired at level 10 after 8 failed logins from `192.168.68.131` for the non-existent user `invaliduser`. Wazuh mapped it to MITRE T1110 Brute Force / Credential Access automatically. This is the only rule that triggers the Shuffle webhook.
 
 ---
 
@@ -94,31 +94,51 @@ Wazuh Alert (webhook) → Alert Parser → VirusTotal Enrichment → AbuseIPDB C
 ### Shuffle Debug — Execution Overview
 ![Shuffle Debug Overview](debug1.png)
 
-Execution status: **FINISHED**. Source: webhook. Started 16:19:56, finished 16:20:14. Full Wazuh JSON payload visible flowing through each node.
+Execution status: **FINISHED**. Source: webhook. Started 16:52:08, finished 16:52:49. The incoming webhook payload carries `rule_id: "5712"`, confirming only the brute-force rule reaches Shuffle.
 
 ---
 
-### Shuffle Debug — Wazuh Alert Payload
+### Shuffle Debug — Alert Parser
 ![Shuffle Debug Payload](debug2.png)
 
-The Change Me node showing the parsed Wazuh alert: severity, title, rule ID, timestamp, and all_fields (10 items). This is the raw JSON Wazuh sent to Shuffle.
+The Alert Parser node showing the parsed Wazuh alert: severity, title, rule ID 5712, timestamp, and `all_fields` (11 items). Every downstream node reads its data from here.
 
 ---
 
-### Shuffle Debug — VirusTotal + Email Result
-![Shuffle Debug Results](debug3.png)
+### Shuffle Debug — VirusTotal Enrichment
+![Shuffle Debug VirusTotal](debug3.png)
 
-**VirusTotal v3:** `status: 200`, IP `192.168.68.131` queried, `success: true`.  
-**Email 1:** `success: true`, `reason: "Email sent to nukalavenkatanarsimahabharghav@gmail.com"`.  
-**SSH Auto-Block:** `success: true` — UFW deny rule inserted at position 1 on Ubuntu Server.  
+**VirusTotal v3:** `status: 200`, IP `192.168.68.131` queried as `ip_address`, `success: true`.
+
+---
+
+### Shuffle Debug — AbuseIPDB Check
+![Shuffle Debug AbuseIPDB](debug4.png)
+
+**AbuseIPDB v2:** `status: 422`. This is expected in the lab: AbuseIPDB only scores public IPs, and the attacker `192.168.68.131` is a private RFC 1918 address. Against a real internet attacker this returns an abuse confidence score of 0–100%. API key redacted.
+
+---
+
+### Shuffle Debug — AI Triage (Gemini)
+![Shuffle Debug AI Triage](debug5.png)
+
+**Google Gemini:** `status: 200`, `modelVersion: gemini-3.6-flash`, 122 prompt tokens, 421 response tokens. The model returns an L1 SOC analyst triage report built from the alert fields. API key redacted.
+
+---
+
+### Shuffle Debug — Email + SSH Auto-Block
+![Shuffle Debug Response](debug6.png)
+
+**SOC Notification:** `success: true`, email sent to the analyst inbox.  
+**SSH Auto-Block:** `success: "true"`, `output: "Rule inserted"`. The UFW deny rule for the attacker is in place on the Ubuntu server.  
 End-to-end confirmation that every node in the pipeline ran successfully.
 
 ---
 
 ### Email Alert — Inbox Proof
-![Email Alert](Email%20Alert.png)
+![Email Alert](email%20alert.png)
 
-The actual email received in Gmail. Subject: **Wazuh Alert**. Body contains the rule description, agent name, severity level 10, timestamp, and VirusTotal enrichment results — `"malicious": 0, "harmless": 56` — embedded directly in the notification. Full pipeline confirmed end-to-end.
+The actual email received in Gmail. It contains the rule description, attacker IP, target host, severity level 10, MITRE T1110, the VirusTotal result, and Gemini's full triage: executive summary, MITRE mapping (T1110.001 Password Guessing), true/false positive assessment, and containment steps. The email is plain text, so the model's markdown (`###`, `**`) shows as literal characters.
 
 ---
 

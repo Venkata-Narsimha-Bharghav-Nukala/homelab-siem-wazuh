@@ -258,11 +258,14 @@ If a breach had occurred:
 
 | Artifact | Description | Location |
 |---|---|---|
-| `wazuh alert.png` | Wazuh dashboard — Rule 5758 fired, level 8, MITRE T1110 | GitHub repo |
-| `debug1.png` | Shuffle execution overview — FINISHED status, 18s runtime | GitHub repo |
+| `wazuh alert.png` | Wazuh Discover — Rule 5712 fired, level 10, MITRE T1110 (re-test run, 2026-10-25) | GitHub repo |
+| `debug1.png` | Shuffle execution overview — FINISHED, webhook payload with rule_id 5712 | GitHub repo |
 | `debug2.png` | Alert Parser node — parsed Wazuh alert JSON payload, all_fields extracted | GitHub repo |
-| `debug3.png` | VirusTotal (status 200) + Email success + SSH Auto-Block confirmation | GitHub repo |
-| `Email Alert.png` | Gmail inbox — alert received with VirusTotal, AbuseIPDB, and AI triage content | GitHub repo |
+| `debug3.png` | VirusTotal Enrichment — status 200 for 192.168.68.131 | GitHub repo |
+| `debug4.png` | AbuseIPDB Check — status 422 (private IP not scored; expected in lab) | GitHub repo |
+| `debug5.png` | AI Triage — Gemini gemini-3.6-flash, status 200 | GitHub repo |
+| `debug6.png` | SOC Notification email sent + SSH Auto-Block "Rule inserted" | GitHub repo |
+| `email alert.png` | Gmail inbox — alert with VirusTotal result and full Gemini triage report | GitHub repo |
 | `final shuffle workflow.png` | Shuffle Build view — all 7 nodes visible with connections | GitHub repo |
 | `Wazuh Enrichment.json` | Full Shuffle workflow export — 7-node pipeline importable into any Shuffle instance | GitHub repo |
 
