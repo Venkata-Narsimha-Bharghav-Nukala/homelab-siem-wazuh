@@ -21,7 +21,7 @@ Built a detection and **automated response** pipeline from scratch using Wazuh S
         v
 [Wazuh SIEM - Docker]
         |
-        |  Alert Level >= 10 · Rule 5758 fires
+        |  Integration filter: rule_id 5712 (sshd brute force) only
         v
 [Shuffle SOAR - Webhook]
         |
@@ -87,7 +87,7 @@ Ubuntu target (`MrRobot`) and Kali attacker both visible and reporting to the Wa
 ### Shuffle SOAR — Full Pipeline
 ![Shuffle Workflow](final%20shuffle%20workflow.png)
 
-Webhook → Change Me (alert parser) → VirusTotal v3 (IP enrichment) → Email → SSH Auto-Block. Full pipeline visible in Build view, running status confirmed.
+Wazuh Alert (webhook) → Alert Parser → VirusTotal Enrichment → AbuseIPDB Check → AI Triage (Gemini) → SOC Notification (email) → SSH Auto-Block. All 7 nodes visible in Build view.
 
 ---
 
